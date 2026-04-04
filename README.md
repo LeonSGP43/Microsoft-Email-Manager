@@ -336,9 +336,12 @@ python main.py
 
 如果你计划将其用于商业化项目、对外收费服务或深度定制交付，建议先与 Maishan Inc. 沟通商业化方案。
 
+## 联系我们
 官网：
 <https://www.maishanzero.com>
-全球区联系邮箱
+
+全球区联系邮箱. 
 <support@maishanzero.com>
-中国区联系邮箱
+
+中国区联系邮箱. 
 <maishanemail@qq.com>
