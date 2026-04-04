@@ -1751,6 +1751,10 @@ async def clear_all_cache(request: Request):
     clear_email_cache()
     return {"message": "All cache cleared"}
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return FileResponse(STATIC_DIR / "favicon.ico")
+
 @app.get("/api")
 async def api_status(request: Request):
     auth_context = require_authenticated(request, allow_api_key=True)
