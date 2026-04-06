@@ -134,10 +134,18 @@ docker-compose up -d
 | `DATA_DIR` | `/app/data` | 数据目录 |
 | `ACCOUNTS_FILE` | `/app/data/accounts.json` | 账户数据文件 |
 | `PYTHONUNBUFFERED` | `1` | 便于查看日志 |
+| `TRUST_PROXY_HEADERS` | `true` | 站点在 Nginx / 宝塔反向代理 / CDN / HTTPS 终止后面时必须开启，否则浏览器写请求可能被判定为跨站 |
 
 健康检查地址：
 
 - `GET /api/auth/state`
+
+反向代理补充说明：
+
+- 如果你的站点前面挂了 Nginx、宝塔反向代理、Caddy、Cloudflare 或其他 HTTPS 终止层，必须同时转发 `Host` 和 `X-Forwarded-Proto`
+- 建议额外转发 `X-Forwarded-Host`
+- 如果未正确转发这些头，后台创建 API Key、批量导入、删除账户这类 `POST/PUT/DELETE` 请求可能会报错：
+  `Cross-site browser requests are not allowed.`
 
 <a id="deploy-railway"></a>
 ## Railway 在线部署
