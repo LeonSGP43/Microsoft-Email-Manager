@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
   - Verification: `curl -s http://127.0.0.1:8000/ | rg "进入后台|API 文档"` and confirmed no `Railway/Zeabur/ClawCloud` content remains on the page.
   - Files: `static/home.html`
 
+- Docker Compose now builds the current fork instead of pulling upstream image
+  - What changed: Switched `docker-compose.yml` to build from the local `Dockerfile` and updated README deployment commands to use `docker compose up -d --build`.
+  - Why: Server deployment must include this fork's auth compatibility and UI cleanup changes instead of silently running the upstream image.
+  - Impact: Future deployments from this repository will run the customized code you just prepared.
+  - Verification: Inspected `docker-compose.yml` and confirmed service now uses `build: .`; README deploy command updated accordingly.
+  - Files: `docker-compose.yml`, `README.md`, `CHANGELOG.md`
+
 ## [1.3.5]
 
 ### Released

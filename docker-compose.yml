@@ -1,6 +1,9 @@
 services:
   outlook-email-client:
-    image: maishanhub/outlookmanager:main
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: microsoft-email-manager:local
     container_name: outlook-email-api
     ports:
       - "8073:8000"
