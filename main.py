@@ -81,16 +81,24 @@ DEFAULT_HOME_TITLE = "Microsoft-Email-Manager"
 DEFAULT_HOME_INTRO = "批量管理 微软邮箱账户\n邮件与 API 自动化中枢"
 
 # OAuth2配置
-TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+CONSUMERS_TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 IMAP_OAUTH_SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 GRAPH_OAUTH_SCOPE = "https://graph.microsoft.com/Mail.Read offline_access"
 GRAPH_API_BASE_URL = "https://graph.microsoft.com/v1.0"
 COMMON_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+ORGANIZATIONS_TOKEN_URL = "https://login.microsoftonline.com/organizations/oauth2/v2.0/token"
 DEFAULT_ACCOUNT_AUTH_METHOD = "imap"
 SUPPORTED_ACCOUNT_AUTH_METHODS = {"imap", "graph"}
 
 # IMAP服务器配置
-IMAP_SERVER = "outlook.live.com"
+PRIMARY_IMAP_SERVER = os.getenv("IMAP_SERVER", "outlook.office365.com").strip() or "outlook.office365.com"
+IMAP_SERVER_CANDIDATES = list(dict.fromkeys([
+    PRIMARY_IMAP_SERVER,
+    "outlook.office365.com",
+    "outlook.live.com",
+    "outlook.office.com",
+    "imap-mail.outlook.com",
+]))
 IMAP_PORT = 993
 
 # 连接池配置
@@ -155,6 +163,7 @@ class AccountCredentials(BaseModel):
     refresh_token: str
     client_id: str
     auth_method: str = Field(default=DEFAULT_ACCOUNT_AUTH_METHOD)
+    tenant: Optional[str] = None
     category_key: Optional[str] = None
     tag_keys: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
@@ -166,6 +175,7 @@ class AccountCredentials(BaseModel):
                 "refresh_token": "0.AXoA...",
                 "client_id": "your-client-id",
                 "auth_method": "imap",
+                "tenant": "common",
                 "category_key": "sales",
                 "tag_keys": ["registered_openai", "vip"],
                 "tags": ["registered_openai", "vip"]
@@ -277,6 +287,7 @@ class AccountInfo(BaseModel):
     email_id: str
     client_id: str
     auth_method: str = DEFAULT_ACCOUNT_AUTH_METHOD
+    tenant: Optional[str] = None
     status: str = "active"
     category_key: Optional[str] = None
     category: Optional[ClassificationOption] = None
@@ -406,26 +417,30 @@ class IMAPConnectionPool:
         Raises:
             Exception: 连接创建失败
         """
-        try:
-            # 设置全局socket超时
-            socket.setdefaulttimeout(SOCKET_TIMEOUT)
+        last_error: Exception | None = None
+        for imap_server in IMAP_SERVER_CANDIDATES:
+            try:
+                # 设置全局socket超时
+                socket.setdefaulttimeout(SOCKET_TIMEOUT)
 
-            # 创建SSL IMAP连接
-            imap_client = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+                # 创建SSL IMAP连接
+                imap_client = imaplib.IMAP4_SSL(imap_server, IMAP_PORT)
 
-            # 设置连接超时
-            imap_client.sock.settimeout(CONNECTION_TIMEOUT)
+                # 设置连接超时
+                imap_client.sock.settimeout(CONNECTION_TIMEOUT)
 
-            # XOAUTH2认证
-            auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01".encode('utf-8')
-            imap_client.authenticate('XOAUTH2', lambda _: auth_string)
+                # XOAUTH2认证
+                auth_string = f"user={email}\x01auth=Bearer {access_token}\x01\x01".encode('utf-8')
+                imap_client.authenticate('XOAUTH2', lambda _: auth_string)
 
-            logger.info(f"Successfully created IMAP connection for {email}")
-            return imap_client
+                logger.info(f"Successfully created IMAP connection for {email} via {imap_server}")
+                return imap_client
 
-        except Exception as e:
-            logger.error(f"Failed to create IMAP connection for {email}: {e}")
-            raise
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Failed to create IMAP connection for {email} via {imap_server}: {e}")
+
+        raise last_error or RuntimeError("Unable to create IMAP connection")
 
     def get_connection(self, email: str, access_token: str) -> imaplib.IMAP4_SSL:
         """
@@ -632,6 +647,11 @@ def normalize_account_auth_method(auth_method: str | None) -> str:
     return method if method in SUPPORTED_ACCOUNT_AUTH_METHODS else DEFAULT_ACCOUNT_AUTH_METHOD
 
 
+def normalize_account_tenant(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().strip("/")
+    return normalized or None
+
+
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     normalized_values: list[str] = []
@@ -765,6 +785,7 @@ def build_account_credentials_from_data(email_id: str, account_data: dict[str, A
         refresh_token=str(account_data["refresh_token"]),
         client_id=str(account_data["client_id"]),
         auth_method=normalize_account_auth_method(account_data.get("auth_method")),
+        tenant=normalize_account_tenant(account_data.get("tenant")),
         category_key=normalize_account_category_key(account_data.get("category_key")),
         tag_keys=normalize_account_tag_keys(account_data.get("tag_keys"), account_data.get("tags", [])),
         tags=normalize_account_tag_keys(account_data.get("tag_keys"), account_data.get("tags", [])),
@@ -1116,6 +1137,7 @@ async def save_account_credentials(email_id: str, credentials: AccountCredential
                 'refresh_token': credentials.refresh_token,
                 'client_id': credentials.client_id,
                 'auth_method': normalize_account_auth_method(getattr(credentials, 'auth_method', DEFAULT_ACCOUNT_AUTH_METHOD)),
+                'tenant': normalize_account_tenant(getattr(credentials, 'tenant', None)),
                 'category_key': normalize_account_category_key(getattr(credentials, 'category_key', None)),
                 'tag_keys': normalize_account_tag_keys(
                     getattr(credentials, 'tag_keys', []),
@@ -1167,6 +1189,7 @@ async def get_all_accounts(
                 email_id=email_id,
                 client_id=account_info.get('client_id', ''),
                 auth_method=normalize_account_auth_method(account_info.get('auth_method')),
+                tenant=normalize_account_tenant(account_info.get('tenant')),
                 status=str(health_record.get("status") or "unchecked"),
                 category_key=normalized_category_key,
                 category=category_option,
@@ -2304,8 +2327,21 @@ async def get_access_token(credentials: AccountCredentials) -> str:
         "refresh_token": credentials.refresh_token,
     }
 
+    def build_token_url_from_hint(hint: str) -> str:
+        normalized_hint = normalize_account_tenant(hint)
+        if not normalized_hint:
+            return ""
+        if normalized_hint.startswith("https://") or normalized_hint.startswith("http://"):
+            return normalized_hint
+        return f"https://login.microsoftonline.com/{quote(normalized_hint, safe='')}/oauth2/v2.0/token"
+
+    token_urls: list[str] = []
+    tenant_hint = normalize_account_tenant(credentials.tenant)
+    if tenant_hint:
+        token_urls.append(build_token_url_from_hint(tenant_hint))
+
     if auth_method == "graph":
-        token_urls = [TOKEN_URL, COMMON_TOKEN_URL]
+        token_urls.extend([COMMON_TOKEN_URL, CONSUMERS_TOKEN_URL, ORGANIZATIONS_TOKEN_URL])
         request_attempts = [
             {**base_request_data, "scope": GRAPH_OAUTH_SCOPE},
             {**base_request_data, "scope": "offline_access openid profile email https://graph.microsoft.com/Mail.Read"},
@@ -2313,15 +2349,18 @@ async def get_access_token(credentials: AccountCredentials) -> str:
             dict(base_request_data),
         ]
     else:
-        token_urls = [TOKEN_URL]
+        token_urls.extend([COMMON_TOKEN_URL, CONSUMERS_TOKEN_URL, ORGANIZATIONS_TOKEN_URL])
         request_attempts = [
-            {**base_request_data, "scope": IMAP_OAUTH_SCOPE},
             dict(base_request_data),
+            {**base_request_data, "scope": IMAP_OAUTH_SCOPE},
         ]
+
+    token_urls = _dedupe_preserve_order([item for item in token_urls if item])
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             last_error_response: httpx.Response | None = None
+            attempt_errors: list[str] = []
 
             for token_url in token_urls:
                 for token_request_data in request_attempts:
@@ -2346,6 +2385,8 @@ async def get_access_token(credentials: AccountCredentials) -> str:
 
                     last_error_response = response
                     detail = extract_graph_error_detail(response)
+                    scope_marker = token_request_data.get("scope") or "<none>"
+                    attempt_errors.append(f"{token_url} scope={scope_marker}: {detail}")
                     logger.warning(
                         "Token attempt failed for %s via %s: HTTP %s %s",
                         credentials.email,
@@ -2356,6 +2397,9 @@ async def get_access_token(credentials: AccountCredentials) -> str:
 
             if last_error_response is not None:
                 detail = extract_graph_error_detail(last_error_response)
+                unique_attempts = _dedupe_preserve_order(attempt_errors)
+                if unique_attempts:
+                    detail = f"{detail} | Attempts: {' || '.join(unique_attempts[:6])}"
                 if last_error_response.status_code == 400:
                     raise HTTPException(status_code=401, detail=detail or "Invalid refresh token or client credentials")
                 raise HTTPException(status_code=401, detail=detail or "Authentication failed")
@@ -3645,6 +3689,7 @@ async def delete_tag_definition(tag_key: str, request: Request):
 async def validate_account(credentials: AccountCredentials, request: Request):
     """验证邮箱账户配置"""
     require_authenticated(request, allow_api_key=True)
+    credentials.tenant = normalize_account_tenant(credentials.tenant)
     credentials.category_key = normalize_account_category_key(credentials.category_key)
     credentials.tag_keys = normalize_account_tag_keys(credentials.tag_keys, credentials.tags)
     credentials.tags = list(credentials.tag_keys)
@@ -3662,6 +3707,7 @@ async def register_account(credentials: AccountCredentials, request: Request):
     require_authenticated(request, allow_api_key=True)
     try:
         credentials.auth_method = normalize_account_auth_method(credentials.auth_method)
+        credentials.tenant = normalize_account_tenant(credentials.tenant)
         credentials.category_key = normalize_account_category_key(credentials.category_key)
         credentials.tag_keys = normalize_account_tag_keys(credentials.tag_keys, credentials.tags)
         credentials.tags = list(credentials.tag_keys)

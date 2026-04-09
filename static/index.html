@@ -4721,17 +4721,26 @@
 
                             <div class="form-group">
                                 <label class="form-label">刷新令牌 (Refresh Token) *</label>
-                                <textarea id="refreshToken" class="form-input form-textarea" rows="4" placeholder="从 Azure 应用获取的 refresh_token" required></textarea>
+                                <textarea id="refreshToken" class="form-input form-textarea" rows="4" placeholder="供应商提供或 Azure 应用获取的 refresh_token" required></textarea>
                                 <p class="text-xs" style="color: #64748b; margin-top: 4px;">
-                                    从 Azure 应用注册流程中获取的刷新令牌，用于 OAuth2 认证
+                                    支持供应商提供的 refresh_token，系统会自动尝试多个微软 token 端点
                                 </p>
                             </div>
 
                             <div class="form-group">
                                 <label class="form-label">客户端 ID (Client ID) *</label>
-                                <input type="text" id="clientId" class="form-input" placeholder="Azure 应用的 client_id" required>
+                                <input type="text" id="clientId" class="form-input" placeholder="供应商提供或 Azure 应用的 client_id" required>
                                 <p class="text-xs" style="color: #64748b; margin-top: 4px;">
-                                    Azure 应用程序的客户端标识符                                </p>
+                                    需与当前 refresh_token 属于同一套 OAuth 应用
+                                </p>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">Tenant / 令牌端点（可选）</label>
+                                <input type="text" id="tenant" class="form-input" placeholder="留空自动尝试 common / consumers / organizations">
+                                <p class="text-xs" style="color: #64748b; margin-top: 4px;">
+                                    可填写 <code>common</code>、<code>consumers</code>、<code>organizations</code>、具体 tenant ID，或完整 token URL
+                                </p>
                             </div>
 
                             <div class="form-group">
@@ -4812,7 +4821,7 @@
                             <div class="form-group">
                                 <label class="form-label">批量账户信息</label>
                                 <p class="text-sm" style="color: #64748b; margin-bottom: 8px;">
-                                    <span id="batchFormatHint">每行格式：<code>邮箱----刷新令牌----客户端ID</code></span>
+                                    <span id="batchFormatHint">每行格式：<code>邮箱----刷新令牌----客户端ID</code>，或追加 <code>----tenant</code></span>
                                 </p>
                                 <!--
                                 <p class="text-sm" style="color: #64748b; margin-bottom: 12px;">
@@ -4820,10 +4829,18 @@
                                 </p>
                                 -->
                                 <textarea id="batchAccounts" class="form-input form-textarea" rows="12" placeholder="example1@outlook.com----refresh_token1----client_id1
-example2@outlook.com----refresh_token2----client_id2
-example3@outlook.com----refresh_token3----client_id3"></textarea>
+example2@outlook.com----refresh_token2----client_id2----common
+example3@outlook.com----refresh_token3----client_id3----organizations"></textarea>
                                 <p class="text-xs" style="color: #64748b; margin-top: 8px;">
-                                    提示：每行一个账户，使用四个连字符（`----`）分隔字段；Graph API 支持 <code>邮箱----密码----client_id----令牌</code>，IMAP 兼容旧格式 <code>邮箱----占位密码----刷新令牌----客户端ID</code>
+                                    提示：每行一个账户，使用四个连字符（`----`）分隔字段；Graph API 支持 <code>邮箱----密码----client_id----令牌</code> 或 <code>邮箱----令牌----client_id----tenant</code>，IMAP 兼容旧格式 <code>邮箱----占位密码----刷新令牌----客户端ID</code>，也支持追加 <code>----tenant</code>
+                                </p>
+                            </div>
+
+                            <div class="form-group">
+                                <label class="form-label">批量导入默认 Tenant / 令牌端点（可选）</label>
+                                <input id="batchTenant" class="form-input" placeholder="留空自动尝试 common / consumers / organizations">
+                                <p class="text-xs" style="color: #64748b; margin-top: 4px;">
+                                    未在单行里指定 tenant 时，系统会使用这里的值；也支持完整 token URL
                                 </p>
                             </div>
 
@@ -7323,21 +7340,40 @@ example3@outlook.com----refresh_token3----client_id3"></textarea>
         function getBatchPlaceholder(authMethod) {
             if (authMethod === 'graph') {
                 return `example1@outlook.com----password1----client_id1----token1
-example2@hotmail.com----password2----client_id2----token2
-example3@live.com----password3----client_id3----token3`;
+example2@hotmail.com----password2----client_id2----token2----common
+example3@live.com----token3----client_id3----organizations`;
             }
 
             return `example1@outlook.com----refresh_token1----client_id1
-example2@hotmail.com----refresh_token2----client_id2
-example3@live.com----refresh_token3----client_id3`;
+example2@hotmail.com----refresh_token2----client_id2----common
+example3@live.com----placeholder----refresh_token3----client_id3----organizations`;
+        }
+
+        function looksLikeClientId(value) {
+            return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test((value || '').trim());
+        }
+
+        function looksLikeToken(value) {
+            const token = (value || '').trim();
+            return token.length >= 20 || token.startsWith('0.') || token.startsWith('M.') || token.includes('.') || token.startsWith('eyJ');
         }
 
         function parseBatchAccountLine(line, authMethod = 'imap') {
             const parts = line.split('----').map(p => p.trim()).filter(part => part.length > 0);
             if (authMethod === 'graph') {
+                if (parts.length === 5) {
+                    const [email, firstValue, secondValue, thirdValue, tenant] = parts;
+                    if (looksLikeToken(firstValue) && looksLikeClientId(secondValue)) {
+                        return { email, refreshToken: firstValue, clientId: secondValue, tenant };
+                    }
+                    return { email, clientId: secondValue, refreshToken: thirdValue, tenant };
+                }
                 if (parts.length === 4) {
-                    const [email, _password, clientId, refreshToken] = parts;
-                    return { email, refreshToken, clientId };
+                    const [email, firstValue, secondValue, thirdValue] = parts;
+                    if (looksLikeToken(firstValue) && looksLikeClientId(secondValue)) {
+                        return { email, refreshToken: firstValue, clientId: secondValue, tenant: thirdValue };
+                    }
+                    return { email, refreshToken: thirdValue, clientId: secondValue };
                 }
                 if (parts.length === 3) {
                     const [email, refreshToken, clientId] = parts;
@@ -7349,9 +7385,22 @@ example3@live.com----refresh_token3----client_id3`;
                 const [email, refreshToken, clientId] = parts;
                 return { email, refreshToken, clientId };
             }
+            if (parts.length === 5) {
+                const [email, secondValue, thirdValue, fourthValue, tenant] = parts;
+                if (looksLikeClientId(thirdValue) && looksLikeToken(fourthValue)) {
+                    return { email, refreshToken: fourthValue, clientId: thirdValue, tenant };
+                }
+                return { email, refreshToken: thirdValue, clientId: fourthValue, tenant };
+            }
             if (parts.length === 4) {
-                const [email, _legacyPassword, refreshToken, clientId] = parts;
-                return { email, refreshToken, clientId };
+                const [email, firstValue, secondValue, thirdValue] = parts;
+                if (looksLikeToken(firstValue) && looksLikeClientId(secondValue)) {
+                    return { email, refreshToken: firstValue, clientId: secondValue, tenant: thirdValue };
+                }
+                if (looksLikeClientId(secondValue) && looksLikeToken(thirdValue)) {
+                    return { email, refreshToken: thirdValue, clientId: secondValue };
+                }
+                return { email, refreshToken: secondValue, clientId: thirdValue };
             }
             return null;
         }
@@ -7364,7 +7413,7 @@ example3@live.com----refresh_token3----client_id3`;
             if (help) {
                 help.textContent = authMethod === 'graph'
                     ? '使用 Microsoft Graph API 读取邮件，适合 Graph 权限令牌。'
-                    : '默认使用 IMAP 读取微软邮箱邮件。';
+                    : '默认使用 IMAP 读取微软邮箱邮件，并自动尝试多个微软 token 端点。';
             }
 
             if (steps) {
@@ -7392,14 +7441,14 @@ example3@live.com----refresh_token3----client_id3`;
 
             if (help) {
                 help.textContent = authMethod === 'graph'
-                    ? '当前批量导入将按 Graph API 方案校验和保存这些账户。'
-                    : '当前批量导入将按 IMAP 方案校验和保存这些账户。';
+                    ? '当前批量导入将按 Graph API 方案校验和保存这些账户，并自动尝试多个微软 token 端点。'
+                    : '当前批量导入将按 IMAP 方案校验和保存这些账户，并自动尝试多个微软 token 端点。';
             }
 
             if (formatHint) {
                 formatHint.innerHTML = authMethod === 'graph'
-                    ? '每行格式：<code>邮箱----密码----client_id----令牌</code>'
-                    : '每行格式：<code>邮箱----刷新令牌----客户端ID</code>';
+                    ? '每行格式：<code>邮箱----密码----client_id----令牌</code>，也支持 <code>邮箱----令牌----client_id----tenant</code>'
+                    : '每行格式：<code>邮箱----刷新令牌----客户端ID</code>，也支持追加 <code>----tenant</code>';
             }
 
             if (batchAccounts) {
@@ -7413,6 +7462,7 @@ example3@live.com----refresh_token3----client_id3`;
             document.getElementById('email').value = '';
             document.getElementById('refreshToken').value = '';
             document.getElementById('clientId').value = '';
+            document.getElementById('tenant').value = '';
             document.getElementById('accountCategoryKey').value = '';
             addAccountTagKeys = [];
             updateAddAccountMethodHints();
@@ -7422,6 +7472,7 @@ example3@live.com----refresh_token3----client_id3`;
         function clearBatchForm() {
             document.getElementById('batchAuthMethod').value = 'imap';
             document.getElementById('batchAccounts').value = '';
+            document.getElementById('batchTenant').value = '';
             document.getElementById('batchCategoryKey').value = '';
             batchTagKeys = [];
             updateBatchMethodHints();
@@ -7466,6 +7517,7 @@ example3@live.com----refresh_token3----client_id3`;
             const email = document.getElementById('email').value.trim();
             const refreshToken = document.getElementById('refreshToken').value.trim();
             const clientId = document.getElementById('clientId').value.trim();
+            const tenant = document.getElementById('tenant').value.trim();
             const categoryKey = document.getElementById('accountCategoryKey').value.trim();
             const tagKeys = [...addAccountTagKeys];
 
@@ -7486,6 +7538,7 @@ example3@live.com----refresh_token3----client_id3`;
                         refresh_token: refreshToken,
                         client_id: clientId,
                         auth_method: authMethod,
+                        tenant: tenant || null,
                         category_key: categoryKey || null,
                         tag_keys: tagKeys
                     })
@@ -7654,6 +7707,7 @@ example3@live.com----refresh_token3----client_id3`;
             const email = document.getElementById('email').value.trim();
             const refreshToken = document.getElementById('refreshToken').value.trim();
             const clientId = document.getElementById('clientId').value.trim();
+            const tenant = document.getElementById('tenant').value.trim();
             const categoryKey = document.getElementById('accountCategoryKey').value.trim();
             const tagKeys = [...addAccountTagKeys];
 
@@ -7674,6 +7728,7 @@ example3@live.com----refresh_token3----client_id3`;
                         refresh_token: refreshToken,
                         client_id: clientId,
                         auth_method: authMethod,
+                        tenant: tenant || null,
                         category_key: categoryKey || null,
                         tag_keys: tagKeys
                     })
@@ -7694,6 +7749,7 @@ example3@live.com----refresh_token3----client_id3`;
         async function batchAddAccounts() {
             const authMethod = getSelectedBatchAuthMethod();
             const batchText = document.getElementById('batchAccounts').value.trim();
+            const batchTenant = document.getElementById('batchTenant').value.trim();
             const categoryKey = document.getElementById('batchCategoryKey').value.trim();
             const tagKeys = [...batchTagKeys];
             if (!batchText) {
@@ -7730,13 +7786,13 @@ example3@live.com----refresh_token3----client_id3`;
                         email: line.split('----')[0] || '格式错误',
                         status: 'error',
                         message: authMethod === 'graph'
-                            ? '格式错误: Graph API 应为 邮箱----密码----client_id----令牌'
+                            ? '格式错误: Graph API 应为 邮箱----密码----client_id----令牌，或 邮箱----令牌----client_id----tenant'
                             : '格式错误: 应为 邮箱----刷新令牌----客户端ID，或兼容旧格式 邮箱----占位密码----刷新令牌----客户端ID'
                     });
                     continue;
                 }
 
-                const { email, refreshToken, clientId } = parsedLine;
+                const { email, refreshToken, clientId, tenant } = parsedLine;
 
                 try {
                     await apiRequest('/accounts', {
@@ -7746,6 +7802,7 @@ example3@live.com----refresh_token3----client_id3`;
                             refresh_token: refreshToken,
                             client_id: clientId,
                             auth_method: authMethod,
+                            tenant: tenant || batchTenant || null,
                             category_key: categoryKey || null,
                             tag_keys: tagKeys
                         })
@@ -10442,8 +10499,3 @@ Authorization: Bearer om_your_api_key
     </script>
 </body>
 </html>
-
-
-
-
-
